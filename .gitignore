@@ -1,0 +1,47 @@
+# =========================
+# ENV / SECRETS
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# FRONTEND (Vite / React)
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env
+frontend/.env.*
+frontend/npm-debug.log*
+frontend/yarn-error.log*
+
+# =========================
+# BACKEND
+# =========================
+backend/
+
+# =========================
+# MIGRATION (NE PAS VERSIONNER)
+# =========================
+migrate/
+
+# =========================
+# ASSETS
+# =========================
+plant_db_assets/
+
+# =========================
+# OS / EDITOR
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# LOGS / TEMP
+# =========================
+*.log
+*.tmp
+*.bak
