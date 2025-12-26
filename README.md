@@ -50,7 +50,7 @@ L’application est automatiquement buildée et déployée via **GitHub Actions*
 
 URL :
 ```
-https://<username>.github.io/plant-flashcards/
+https://adaspre.github.io/plant-flashcards/
 ```
 
 ---
