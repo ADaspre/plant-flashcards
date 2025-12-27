@@ -76,7 +76,14 @@ export default function App() {
     const e = email.trim();
     if (!e) return;
 
-    const { error } = await supabase.auth.signInWithOtp({ email: e });
+    const { error } = 
+    await supabase.auth.signInWithOtp({
+      email: e,
+      options: {
+        emailRedirectTo: "https://adaspre.github.io/plant-flashcards/",
+      },
+    });
+
     if (error) {
       alert(error.message);
       return;
