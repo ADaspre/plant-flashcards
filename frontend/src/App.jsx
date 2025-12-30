@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./app.css";
 import { supabase } from "./supabaseClient";
+import { runCelebration } from "./celebration";
+
 
 // ---------- Config ----------
 const STORAGE_BUCKET = "plant-images";
@@ -64,6 +66,9 @@ export default function App() {
   const [cardState, setCardState] = useState(null); // { index,total, card:{plantId,name,category,images:[{url,idx}]} }
   const [answer, setAnswer] = useState("");
   const [zoomUrl, setZoomUrl] = useState(null);
+  const [celebrating, setCelebrating] = useState(false);
+
+
 
   // feedback: idle | correct | wrong
   const [feedback, setFeedback] = useState("idle");
@@ -73,6 +78,9 @@ export default function App() {
 
   const plantId = cardState?.card?.plantId ?? null;
   const images = cardState?.card?.images ?? [];
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+
 
   // Overall Progress
   const [sectionProgress, setSectionProgress] = useState(null);
@@ -358,58 +366,79 @@ export default function App() {
   }
 
   // Load queue
-  async function loadCard() {
-    if (!user) return;
-    if (!section) return; // pas de section => pas de chargement
+async function loadCard(retry = false) {
+  if (!user) return;
+  if (!section) return;
 
-    setLoading(true);
-    try {
-      await ensureUserInitialized(user.id);
+  setLoading(true);
+  try {
+    await ensureUserInitialized(user.id);
 
-      const { queue, index } = await loadSession(user.id);
-      const next = await buildQueueIfNeeded(user.id, queue, index, section);
+    const { queue, index } = await loadSession(user.id);
+    const next = await buildQueueIfNeeded(user.id, queue, index, section);
 
     if (next.queue.length === 0) {
-      // 1) Reset section en DB
-      await resetSectionProgressToNotAsked(user.id, section);
-
-      // 2) Optionnel: reset immédiat du compteur côté UI
-      setSectionProgress((p) => (p ? { ...p, right: 0 } : p));
-
-      // 3) Relancer pour recréer une queue
-      await loadCard();
-      return;
-    }
-
-      const currentPlantId = next.queue[next.index];
-      const card = await fetchCardPayload(currentPlantId);
-
-      if (!card) {
-        // queue pas cohérente avec la section (ex: section changée)
-        await saveSession(user.id, [], 0);
-        await loadCard();
+      if (retry) {
+        // Fallback si jamais reset impossible (RLS, réseau)
+        setCardState({
+          index: 0,
+          total: 0,
+          card: { plantId: null, name: "", category: "", images: [] },
+          mode: "done",
+        });
         return;
       }
 
-      setCardState({
-        mode: next.mode,
-        index: next.index,
-        total: next.queue.length,
-        card,
-      });
+      // 1) Animation premium
+      setCelebrating(true);
+      runCelebration();
 
-      setAnswer("");
-      setFeedback("idle");
-      setCorrectName("");
+      // 2) Laisse le temps à l’animation d’être ressentie
+      await sleep(1800);
 
-      setTimeout(() => inputRef.current?.focus(), 0);
-    } catch (e) {
-      console.error(e);
-      alert(e.message ?? String(e));
-    } finally {
-      setLoading(false);
+      // 3) Reset DB + session
+      await resetSectionProgressToNotAsked(user.id, section);
+
+      // 4) Reset UI progress immédiat (optimiste)
+      setSectionProgress((p) => (p ? { ...p, right: 0 } : p));
+
+      // 5) Stop overlay
+      setCelebrating(false);
+
+      // 6) Relance une seule fois
+      await loadCard(true);
+      return;
     }
+
+    const currentPlantId = next.queue[next.index];
+    const card = await fetchCardPayload(currentPlantId);
+
+    if (!card) {
+      await saveSession(user.id, [], 0);
+      await loadCard(true);
+      return;
+    }
+
+    setCardState({
+      mode: next.mode,
+      index: next.index,
+      total: next.queue.length,
+      card,
+    });
+
+    setAnswer("");
+    setFeedback("idle");
+    setCorrectName("");
+
+    setTimeout(() => inputRef.current?.focus(), 0);
+  } catch (e) {
+    console.error(e);
+    alert(e.message ?? String(e));
+  } finally {
+    setLoading(false);
   }
+}
+
 
   // load overall Progress
   useEffect(() => {
@@ -692,6 +721,20 @@ export default function App() {
           </div>
         </div>
       )}
+
+{celebrating ? (
+  <div className="celebrateOverlay" aria-hidden="true">
+    <div className="celebratePanel">
+      <div className="celebrateTitle">Section complétée</div>
+      <div className="celebrateKpi">
+        {sectionProgress ? `${sectionProgress.right} / ${sectionProgress.total}` : ""}
+      </div>
+      <div className="celebrateHint">Reset automatique et nouveau cycle…</div>
+    </div>
+  </div>
+) : null}
+
+
 
       {zoomUrl ? (
         <div

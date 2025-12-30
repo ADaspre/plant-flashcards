@@ -253,3 +253,52 @@ body {
   font-weight: 700;
   letter-spacing: 0.2px;
 }
+.celebrateOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  place-items: center;
+  backdrop-filter: blur(6px);
+  background: rgba(10, 10, 14, 0.55);
+}
+
+.celebratePanel {
+  width: min(640px, 92vw);
+  border-radius: 22px;
+  padding: 22px 20px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: linear-gradient(
+    180deg,
+    rgba(30, 30, 38, 0.92),
+    rgba(18, 18, 24, 0.92)
+  );
+  box-shadow: 0 30px 120px rgba(0,0,0,0.55);
+  text-align: center;
+  transform: translateY(0);
+  animation: popIn 320ms cubic-bezier(.2,.9,.2,1);
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.celebrateTitle {
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: 0.2px;
+  margin-bottom: 6px;
+}
+
+.celebrateKpi {
+  margin-top: 10px;
+  font-size: 14px;
+  opacity: 0.9;
+}
+
+.celebrateHint {
+  margin-top: 2px;
+  font-size: 13px;
+  opacity: 0.72;
+}
