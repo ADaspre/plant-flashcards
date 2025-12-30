@@ -357,6 +357,7 @@ export default function App() {
     };
   }
 
+  // Load queue
   async function loadCard() {
     if (!user) return;
     if (!section) return; // pas de section => pas de chargement
@@ -368,18 +369,17 @@ export default function App() {
       const { queue, index } = await loadSession(user.id);
       const next = await buildQueueIfNeeded(user.id, queue, index, section);
 
-      if (next.queue.length === 0) {
-        setCardState({
-          index: 0,
-          total: 0,
-          card: { plantId: null, name: "", category: "", images: [] },
-          mode: "done",
-        });
-        setAnswer("");
-        setFeedback("idle");
-        setCorrectName("");
-        return;
-      }
+    if (next.queue.length === 0) {
+      // 1) Reset section en DB
+      await resetSectionProgressToNotAsked(user.id, section);
+
+      // 2) Optionnel: reset immédiat du compteur côté UI
+      setSectionProgress((p) => (p ? { ...p, right: 0 } : p));
+
+      // 3) Relancer pour recréer une queue
+      await loadCard();
+      return;
+    }
 
       const currentPlantId = next.queue[next.index];
       const card = await fetchCardPayload(currentPlantId);
@@ -426,6 +426,39 @@ export default function App() {
     if (user?.id && section) loadCard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, section]);
+
+  // Once all cards a right
+  async function resetSectionProgressToNotAsked(userId, section) {
+    // 1) Récupérer tous les plant_id de la section
+    const { data: plants, error: pErr } = await supabase
+      .from("plants")
+      .select("id")
+      .eq("section", section);
+
+    if (pErr) throw pErr;
+
+    const ids = (plants ?? []).map((x) => x.id);
+    if (ids.length === 0) return;
+
+    // 2) Reset plant_state -> notAsked (par batch pour éviter payload trop gros)
+    const BATCH = 200;
+
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const chunk = ids.slice(i, i + BATCH);
+
+      const { error: uErr } = await supabase
+        .from("plant_state")
+        .update({ state: "notAsked" })
+        .eq("user_id", userId)
+        .in("plant_id", chunk);
+
+      if (uErr) throw uErr;
+    }
+
+    // 3) Reset session queue/index (sinon tu gardes une queue morte)
+    await saveSession(userId, [], 0);
+  }
+
 
   // ---------- Actions ----------
   async function goNext() {
@@ -589,11 +622,11 @@ export default function App() {
       ) : cardState.mode === "done" ? (
         <div className="center">
           <div className="card">
-            <h2>Terminé</h2>
-            <p>Plus de cartes disponibles (tout est en right) pour cette section.</p>
+            <h2>Fin de section</h2>
+            <p>Impossible de relancer automatiquement. Change de section ou réessaie.</p>
             <div className="row">
-              <button className="btn ghost" onClick={loadCard}>
-                Recharger
+              <button onClick={loadCard}>
+                  RESET
               </button>
               <button className="btn ghost" onClick={resetSection}>
                 Changer de section
