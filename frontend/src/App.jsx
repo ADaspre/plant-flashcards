@@ -68,6 +68,13 @@ export default function App() {
   const [zoomUrl, setZoomUrl] = useState(null);
   const [celebrating, setCelebrating] = useState(false);
 
+  // App Exam mode
+  const [examMode, setExamMode] = useState(false);
+  const [examPhase, setExamPhase] = useState("main"); // "main" | "retryWrong"
+  const [examQueue, setExamQueue] = useState([]);
+  const [examIndex, setExamIndex] = useState(0);
+  const [examStateById, setExamStateById] = useState({}); // { [plantId]: "notAsked"|"right"|"wrong" }
+  const [examFinished, setExamFinished] = useState(false);
 
 
   // feedback: idle | correct | wrong
@@ -79,8 +86,6 @@ export default function App() {
   const plantId = cardState?.card?.plantId ?? null;
   const images = cardState?.card?.images ?? [];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-
 
   // Overall Progress
   const [sectionProgress, setSectionProgress] = useState(null);
@@ -252,6 +257,21 @@ export default function App() {
     if (error) throw error;
   }
 
+  // Mode exam helper
+  const examTotal = examQueue.length;
+  const examRight = useMemo(() => {
+    let c = 0;
+    for (const k in examStateById) if (examStateById[k] === "right") c++;
+    return c;
+  }, [examStateById]);
+
+  const examWrong = useMemo(() => {
+    let c = 0;
+    for (const k in examStateById) if (examStateById[k] === "wrong") c++;
+    return c;
+  }, [examStateById]);
+
+
   // ---------- Queue builder (pending vs new 20) ----------
   async function buildQueueIfNeeded(userId, queue, index, section) {
     if (queue.length > 0 && index < queue.length) {
@@ -302,6 +322,63 @@ export default function App() {
     await saveSession(userId, nextPack, 0);
     return { queue: nextPack, index: 0, mode: "learning" };
   }
+
+
+  // Charge queue for exam mode
+  async function startExam() {
+    if (!user || !section) return;
+
+    setLoading(true);
+    try {
+      // Récupérer toutes les plantes de la section
+      const { data, error } = await supabase
+        .from("plants")
+        .select("id")
+        .eq("section", section);
+
+      if (error) throw error;
+
+      const ids = shuffle((data ?? []).map((x) => x.id));
+      const initState = {};
+      ids.forEach((id) => (initState[id] = "notAsked"));
+
+      setExamMode(true);
+      setExamPhase("main");
+      setExamQueue(ids);
+      setExamIndex(0);
+      setExamStateById(initState);
+      setExamFinished(false);
+
+      // charge la première carte
+      const card = await fetchCardPayload(ids[0]);
+      if (!card) throw new Error("Impossible de charger la première carte (exam).");
+
+      setCardState({ mode: "exam", index: 0, total: ids.length, card });
+      setAnswer("");
+      setFeedback("idle");
+      setCorrectName("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    } catch (e) {
+      console.error(e);
+      alert(e.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function exitExamToSectionPicker() {
+    setExamMode(false);
+    setExamPhase("main");
+    setExamQueue([]);
+    setExamIndex(0);
+    setExamStateById({});
+    setExamFinished(false);
+
+    // Retour au choix de section (localStorage)
+    resetSection();
+  }
+
+
 
 
   // ---------- Right on total --------------
@@ -497,9 +574,83 @@ async function loadCard(retry = false) {
     await loadCard();
   }
 
+  // Exam mode next
+  async function examNext() {
+    const nextIndex = examIndex + 1;
+
+    // Fin de la queue actuelle
+    if (nextIndex >= examQueue.length) {
+      // Fin de phase
+      setExamFinished(true);
+      return;
+    }
+
+    setExamIndex(nextIndex);
+
+    const nextPlantId = examQueue[nextIndex];
+    const card = await fetchCardPayload(nextPlantId);
+
+    if (!card) {
+      // si carte introuvable, on saute
+      setExamIndex((i) => i + 1);
+      return;
+    }
+
+    setCardState({
+      mode: "exam",
+      index: nextIndex,
+      total: examQueue.length,
+      card,
+    });
+
+    setAnswer("");
+    setFeedback("idle");
+    setCorrectName("");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+
+  // Retry wrong on exam mode
+  async function retryWrongOnly() {
+    // construire queue = toutes les wrong (de la section)
+    const wrongIds = examQueue.filter((id) => examStateById[id] === "wrong");
+
+    if (wrongIds.length === 0) {
+      // tout right -> sortie
+      exitExamToSectionPicker();
+      return;
+    }
+
+    setExamPhase("retryWrong");
+    setExamQueue(wrongIds);
+    setExamIndex(0);
+    setExamFinished(false);
+
+    const card = await fetchCardPayload(wrongIds[0]);
+    if (!card) {
+      exitExamToSectionPicker();
+      return;
+    }
+
+    setCardState({ mode: "exam", index: 0, total: wrongIds.length, card });
+    setAnswer("");
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  //No retry on wrong during exam mode
+  function finishExamNoRetry() {
+    exitExamToSectionPicker();
+  }
+
+
   async function handleSkip() {
     if (!user || !plantId) return;
     if (isWrong || isCorrect) return;
+
+    if (examMode) {
+      await examNext(); // pas de changement d'état local
+      return;
+    }
     await goNext();
   }
 
@@ -510,7 +661,23 @@ async function loadCard(retry = false) {
     const expected = expectedDisplayName(cardState.card.name, section);
     const correct = normalize(answer) === normalize(expected);
 
+    // ----- MODE EXAMEN (local only) -----
+    if (examMode) {
+      const expected = expectedDisplayName(cardState.card.name, section);
+      const correct = normalize(answer) === normalize(expected);
 
+      setExamStateById((prev) => ({
+        ...prev,
+        [plantId]: correct ? "right" : "wrong",
+      }));
+
+      // pas de feedback visible
+      // passer à la carte suivante
+      await examNext();
+      return;
+    }
+
+    // ----- MODE NORMAL (DB) -----
     if (correct) {
       const { error } = await supabase.from("plant_state").upsert({
         user_id: user.id,
@@ -578,6 +745,8 @@ async function loadCard(retry = false) {
               {section ? <div className="chip">Section: {sectionLabel}</div> : null}
               {cardState?.total ? <div className="chip">{progressLabel}</div> : null}
               {sectionProgress && section ? (<div className="chip"> Progress: {sectionProgress.right} / {sectionProgress.total}</div>) : null}
+              {user && section && !examMode ? (<button className="btn ghost" onClick={startExam} title="Mode examen">Mode examen</button>) : null}
+              {examMode ? (<button className="btn ghost" onClick={exitExamToSectionPicker} title="Quitter">Quitter examen</button>) : null}
               {section ? (
                 <button className="btn ghost" onClick={resetSection} title="Changer de section">
                   Changer section
@@ -648,6 +817,23 @@ async function loadCard(retry = false) {
         <div className="center">
           <div className="card">Chargement...</div>
         </div>
+      ) : examMode && examFinished ? (
+        <div className="center">
+          <div className="card">
+            <h2>Résultat examen</h2>
+            <p>Score : {examRight} / {examTotal}</p>
+            <p>Wrong : {examWrong}</p>
+
+            <div className="row">
+              <button className="btn primary" onClick={retryWrongOnly}>
+                Refaire uniquement les wrong
+              </button>
+              <button className="btn ghost" onClick={finishExamNoRetry}>
+                Terminer
+              </button>
+            </div>
+          </div>
+        </div>
       ) : cardState.mode === "done" ? (
         <div className="center">
           <div className="card">
@@ -712,9 +898,7 @@ async function loadCard(retry = false) {
                     V
                   </button>
 
-                  <button className="btn ghost" onClick={handleSkip} disabled={isCorrect}>
-                    Skip
-                  </button>
+                  {!examMode ? (<button className="btn ghost" onClick={handleSkip} disabled={isCorrect}>Skip</button>) : null}
                 </>
               )}
             </div>
@@ -722,17 +906,17 @@ async function loadCard(retry = false) {
         </div>
       )}
 
-{celebrating ? (
-  <div className="celebrateOverlay" aria-hidden="true">
-    <div className="celebratePanel">
-      <div className="celebrateTitle">Section complétée</div>
-      <div className="celebrateKpi">
-        {sectionProgress ? `${sectionProgress.right} / ${sectionProgress.total}` : ""}
-      </div>
-      <div className="celebrateHint">Reset automatique et nouveau cycle…</div>
-    </div>
-  </div>
-) : null}
+      {celebrating ? (
+        <div className="celebrateOverlay" aria-hidden="true">
+          <div className="celebratePanel">
+            <div className="celebrateTitle">Section complétée</div>
+            <div className="celebrateKpi">
+              {sectionProgress ? `${sectionProgress.right} / ${sectionProgress.total}` : ""}
+            </div>
+            <div className="celebrateHint">Reset automatique et nouveau cycle…</div>
+          </div>
+        </div>
+      ) : null}
 
 
 
