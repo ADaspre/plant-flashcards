@@ -7,6 +7,11 @@ const STORAGE_BUCKET = "plant-images";
 const PACK_SIZE = 20;
 const INIT_BATCH_SIZE = 100;
 
+const SECTIONS = [
+  { key: "floriculture", label: "Floriculture" },
+  { key: "arboriculture", label: "Arboriculture" },
+];
+
 // ---------- Helpers ----------
 function shuffle(arr) {
   const a = [...arr];
@@ -18,15 +23,30 @@ function shuffle(arr) {
 }
 
 function normalize(s) {
-  return (s ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
+  return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
+
+function baseBeforeUnderscore(name) {
+  const s = (name ?? "").trim();
+  const i = s.indexOf("_");
+  return i === -1 ? s : s.slice(0, i);
+}
+
+function expectedDisplayName(plantName, section) {
+  // Spécifique arboriculture : on ne garde que la 1ère partie avant "_"
+  return section === "arboriculture"
+    ? baseBeforeUnderscore(plantName)
+    : (plantName ?? "").trim();
+}
+
 
 function publicImageUrl(path) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
   return data.publicUrl;
+}
+
+function sectionStorageKey(userId) {
+  return `pf_section_${userId}`;
 }
 
 // ---------- App ----------
@@ -35,6 +55,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [email, setEmail] = useState("");
   const [emailSent, setEmailSent] = useState(false);
+
+  // Section
+  const [section, setSection] = useState(null);
 
   // App state
   const [loading, setLoading] = useState(true);
@@ -72,15 +95,24 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // ---------- Load persisted section per-user ----------
+  useEffect(() => {
+    if (!user?.id) {
+      setSection(null);
+      return;
+    }
+    const saved = localStorage.getItem(sectionStorageKey(user.id));
+    setSection(saved || null);
+  }, [user?.id]);
+
   async function sendMagicLink() {
     const e = email.trim();
     if (!e) return;
 
-    const { error } = 
-    await supabase.auth.signInWithOtp({
+    const { error } = await supabase.auth.signInWithOtp({
       email: e,
       options: {
-        emailRedirectTo: "https://adaspre.github.io/plant-flashcards/",
+        emailRedirectTo: window.location.href,
       },
     });
 
@@ -95,6 +127,23 @@ export default function App() {
     await supabase.auth.signOut();
     setEmailSent(false);
     setEmail("");
+    setSection(null);
+    setCardState(null);
+    setAnswer("");
+    setFeedback("idle");
+    setCorrectName("");
+  }
+
+  function chooseSection(sec) {
+    if (!user?.id) return;
+    localStorage.setItem(sectionStorageKey(user.id), sec);
+    setSection(sec);
+  }
+
+  function resetSection() {
+    if (!user?.id) return;
+    localStorage.removeItem(sectionStorageKey(user.id));
+    setSection(null);
     setCardState(null);
     setAnswer("");
     setFeedback("idle");
@@ -113,7 +162,6 @@ export default function App() {
     if (sessErr) throw sessErr;
 
     if (!sess) {
-      // create empty session row
       const { error: insSessErr } = await supabase.from("user_sessions").insert({
         user_id: userId,
         current_queue_json: [],
@@ -131,7 +179,7 @@ export default function App() {
     if (countErr) throw countErr;
 
     if ((count ?? 0) === 0) {
-      // Need to create one row per plant as notAsked
+      // Create one row per plant as notAsked (toutes sections confondues)
       const { data: plants, error: plantsErr } = await supabase
         .from("plants")
         .select("id");
@@ -144,7 +192,6 @@ export default function App() {
         state: "notAsked",
       }));
 
-      // Insert in batches
       for (let i = 0; i < rows.length; i += INIT_BATCH_SIZE) {
         const batch = rows.slice(i, i + INIT_BATCH_SIZE);
         const { error: insErr } = await supabase.from("plant_state").insert(batch);
@@ -195,36 +242,38 @@ export default function App() {
   }
 
   // ---------- Queue builder (pending vs new 20) ----------
-  async function buildQueueIfNeeded(userId, queue, index) {
+  async function buildQueueIfNeeded(userId, queue, index, section) {
     if (queue.length > 0 && index < queue.length) {
       return { queue, index, mode: "active" };
     }
 
-    // pending = wrong ∪ inList  (=> wrong + skipped come back together)
+    // pending = wrong ∪ inList (dans la section choisie)
     const { data: pendingRows, error: pErr } = await supabase
       .from("plant_state")
-      .select("plant_id")
+      .select("plant_id, plants!inner(section)")
       .eq("user_id", userId)
-      .in("state", ["wrong", "inList"]);
+      .in("state", ["wrong", "inList"])
+      .eq("plants.section", section);
 
     if (pErr) throw pErr;
 
-    if (pendingRows.length > 0) {
+    if ((pendingRows ?? []).length > 0) {
       const pending = shuffle(pendingRows.map((r) => r.plant_id));
       await saveSession(userId, pending, 0);
       return { queue: pending, index: 0, mode: "review_pending" };
     }
 
-    // else: take up to 20 notAsked
+    // else: take up to 20 notAsked (dans la section choisie)
     const { data: naRows, error: naErr } = await supabase
       .from("plant_state")
-      .select("plant_id")
+      .select("plant_id, plants!inner(section)")
       .eq("user_id", userId)
-      .eq("state", "notAsked");
+      .eq("state", "notAsked")
+      .eq("plants.section", section);
 
     if (naErr) throw naErr;
 
-    const shuffled = shuffle(naRows.map((r) => r.plant_id));
+    const shuffled = shuffle((naRows ?? []).map((r) => r.plant_id));
     const nextPack = shuffled.slice(0, PACK_SIZE);
 
     // mark them as inList
@@ -235,7 +284,6 @@ export default function App() {
         state: "inList",
       }));
 
-      // upsert by (user_id, plant_id) primary key
       const { error: uErr } = await supabase.from("plant_state").upsert(upserts);
       if (uErr) throw uErr;
     }
@@ -246,13 +294,19 @@ export default function App() {
 
   // ---------- Card loader ----------
   async function fetchCardPayload(plantId) {
+    // Optionnel mais robuste: on s'assure que la plante est bien dans la section choisie
     const { data: p, error: pErr } = await supabase
       .from("plants")
-      .select("id,name,category")
+      .select("id,name,category,section")
       .eq("id", plantId)
       .single();
 
     if (pErr) throw pErr;
+
+    if (section && p.section !== section) {
+      // garde-fou : si session corrompue / queue ancienne, on force reload
+      return null;
+    }
 
     const { data: imgs, error: iErr } = await supabase
       .from("plant_images")
@@ -277,16 +331,16 @@ export default function App() {
 
   async function loadCard() {
     if (!user) return;
+    if (!section) return; // pas de section => pas de chargement
 
     setLoading(true);
     try {
       await ensureUserInitialized(user.id);
 
       const { queue, index } = await loadSession(user.id);
-      const next = await buildQueueIfNeeded(user.id, queue, index);
+      const next = await buildQueueIfNeeded(user.id, queue, index, section);
 
       if (next.queue.length === 0) {
-        // plus rien à apprendre (tout right)
         setCardState({
           index: 0,
           total: 0,
@@ -301,6 +355,13 @@ export default function App() {
 
       const currentPlantId = next.queue[next.index];
       const card = await fetchCardPayload(currentPlantId);
+
+      if (!card) {
+        // queue pas cohérente avec la section (ex: section changée)
+        await saveSession(user.id, [], 0);
+        await loadCard();
+        return;
+      }
 
       setCardState({
         mode: next.mode,
@@ -322,11 +383,11 @@ export default function App() {
     }
   }
 
-  // initial load once logged in
+  // load once logged in + section selected
   useEffect(() => {
-    if (user) loadCard();
+    if (user?.id && section) loadCard();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id]);
+  }, [user?.id, section]);
 
   // ---------- Actions ----------
   async function goNext() {
@@ -339,8 +400,6 @@ export default function App() {
   async function handleSkip() {
     if (!user || !plantId) return;
     if (isWrong || isCorrect) return;
-
-    // Skip does NOT change state (remains inList), just advances index
     await goNext();
   }
 
@@ -348,10 +407,11 @@ export default function App() {
     if (!user || !plantId) return;
     if (isWrong || isCorrect) return;
 
-    const correct = normalize(answer) === normalize(cardState.card.name);
+    const expected = expectedDisplayName(cardState.card.name, section);
+    const correct = normalize(answer) === normalize(expected);
+
 
     if (correct) {
-      // set right
       const { error } = await supabase.from("plant_state").upsert({
         user_id: user.id,
         plant_id: plantId,
@@ -363,12 +423,10 @@ export default function App() {
       }
 
       setFeedback("correct");
-
       setTimeout(async () => {
         await goNext();
       }, 1000);
     } else {
-      // set wrong
       const { error } = await supabase.from("plant_state").upsert({
         user_id: user.id,
         plant_id: plantId,
@@ -380,8 +438,8 @@ export default function App() {
       }
 
       setFeedback("wrong");
-      setCorrectName(cardState.card.name);
-      setAnswer(cardState.card.name); // remplis la bonne réponse
+      setCorrectName(expected);
+      setAnswer(expected);
     }
   }
 
@@ -392,7 +450,6 @@ export default function App() {
     }
   }
 
-  // Zoom overlay close rule: click overlay but not image
   function closeZoomIfOverlayClick(e) {
     if (e.target?.dataset?.role === "zoom-overlay") {
       setZoomUrl(null);
@@ -400,6 +457,9 @@ export default function App() {
   }
 
   // ---------- UI ----------
+  const sectionLabel =
+    SECTIONS.find((s) => s.key === section)?.label ?? section ?? "";
+
   return (
     <div className="page">
       <header className="topbar">
@@ -409,7 +469,13 @@ export default function App() {
           {user ? (
             <>
               <div className="chip">{user.email}</div>
+              {section ? <div className="chip">Section: {sectionLabel}</div> : null}
               {cardState?.total ? <div className="chip">{progressLabel}</div> : null}
+              {section ? (
+                <button className="btn ghost" onClick={resetSection} title="Changer de section">
+                  Changer section
+                </button>
+              ) : null}
               <button className="btn ghost" onClick={logout}>
                 Logout
               </button>
@@ -451,6 +517,26 @@ export default function App() {
             )}
           </div>
         </div>
+      ) : !section ? (
+        // ---------- Section picker ----------
+        <div className="center">
+          <div className="card loginCard">
+            <h2>Choisir une section</h2>
+            <p>Choissis ton cours.</p>
+
+            <div className="sectionGrid">
+              {SECTIONS.map((s) => (
+                <button
+                  key={s.key}
+                  className="btn sectionBtn"
+                  onClick={() => chooseSection(s.key)}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       ) : loading || !cardState ? (
         <div className="center">
           <div className="card">Chargement...</div>
@@ -459,10 +545,15 @@ export default function App() {
         <div className="center">
           <div className="card">
             <h2>Terminé</h2>
-            <p>Plus de cartes disponibles (tout est en right).</p>
-            <button className="btn ghost" onClick={loadCard}>
-              Recharger
-            </button>
+            <p>Plus de cartes disponibles (tout est en right) pour cette section.</p>
+            <div className="row">
+              <button className="btn ghost" onClick={loadCard}>
+                Recharger
+              </button>
+              <button className="btn ghost" onClick={resetSection}>
+                Changer de section
+              </button>
+            </div>
           </div>
         </div>
       ) : (
