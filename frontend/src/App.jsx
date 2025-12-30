@@ -74,6 +74,9 @@ export default function App() {
   const plantId = cardState?.card?.plantId ?? null;
   const images = cardState?.card?.images ?? [];
 
+  // Overall Progress
+  const [sectionProgress, setSectionProgress] = useState(null);
+
   const progressLabel = useMemo(() => {
     if (!cardState) return "";
     return `${cardState.index + 1} / ${cardState.total}`;
@@ -292,6 +295,31 @@ export default function App() {
     return { queue: nextPack, index: 0, mode: "learning" };
   }
 
+
+  // ---------- Right on total --------------
+  async function loadSectionProgress(userId, section) {
+    // total plantes dans la section
+    const { count: total, error: e1 } = await supabase
+      .from("plants")
+      .select("*", { count: "exact", head: true })
+      .eq("section", section);
+
+    if (e1) throw e1;
+
+    // right pour cet user dans la section
+    const { count: right, error: e2 } = await supabase
+      .from("plant_state")
+      .select("plant_id, plants!inner(section)", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("state", "right")
+      .eq("plants.section", section);
+
+    if (e2) throw e2;
+
+    return { right: right ?? 0, total: total ?? 0 };
+  }
+
+
   // ---------- Card loader ----------
   async function fetchCardPayload(plantId) {
     // Optionnel mais robuste: on s'assure que la plante est bien dans la section choisie
@@ -383,6 +411,16 @@ export default function App() {
     }
   }
 
+  // load overall Progress
+  useEffect(() => {
+    if (!user || !section) return;
+
+    loadSectionProgress(user.id, section)
+      .then(setSectionProgress)
+      .catch(console.error);
+  }, [user?.id, section]);
+
+
   // load once logged in + section selected
   useEffect(() => {
     if (user?.id && section) loadCard();
@@ -423,6 +461,12 @@ export default function App() {
       }
 
       setFeedback("correct");
+
+      // Update overAll progress
+      setSectionProgress((p) =>
+        p ? { ...p, right: p.right + 1 } : p
+      );
+
       setTimeout(async () => {
         await goNext();
       }, 1000);
@@ -471,6 +515,7 @@ export default function App() {
               <div className="chip">{user.email}</div>
               {section ? <div className="chip">Section: {sectionLabel}</div> : null}
               {cardState?.total ? <div className="chip">{progressLabel}</div> : null}
+              {sectionProgress && section ? (<div className="chip"> Progress: {sectionProgress.right} / {sectionProgress.total}</div>) : null}
               {section ? (
                 <button className="btn ghost" onClick={resetSection} title="Changer de section">
                   Changer section
