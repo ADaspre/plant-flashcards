@@ -29,18 +29,24 @@ function normalize(s) {
 }
 
 function baseBeforeUnderscore(name) {
-  const s = (name ?? "").trim();
-  const i = s.indexOf("_");
-  return i === -1 ? s : s.slice(0, i);
+  const i = name.indexOf("_");
+  return i === -1 ? name : name.slice(0, i);
 }
 
 function expectedDisplayName(plantName, section) {
-  // Spécifique arboriculture : on ne garde que la 1ère partie avant "_"
-  return section === "arboriculture"
-    ? baseBeforeUnderscore(plantName)
-    : (plantName ?? "").trim();
-}
+  const raw = (plantName ?? "").trim();
 
+  if (section === "arboriculture") {
+    return baseBeforeUnderscore(raw);
+  }
+
+  if (section === "floriculture") {
+    const firstSpace = raw.indexOf(" ");
+    return firstSpace === -1 ? raw : raw.slice(0, firstSpace);
+  }
+
+  return raw;
+}
 
 function publicImageUrl(path) {
   const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
